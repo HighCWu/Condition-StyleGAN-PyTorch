@@ -366,7 +366,7 @@ class StyledGenerator(nn.Module):
 
 
 class Discriminator(nn.Module):
-    def __init__(self):
+    def __init__(self, n_classes=10):
         super().__init__()
 
         self.progression = nn.ModuleList(
@@ -402,6 +402,7 @@ class Discriminator(nn.Module):
         self.n_layer = len(self.progression)
 
         self.linear = EqualLinear(512, 1)
+        self.classify = EqualLinear(512, n_classes)
 
     def forward(self, input, step=0, alpha=-1):
         for i in range(step, -1, -1):
@@ -433,8 +434,9 @@ class Discriminator(nn.Module):
 
                     out = (1 - alpha) * skip_rgb + alpha * out
 
-        out = out.squeeze(2).squeeze(2)
+        _out = out.squeeze(2).squeeze(2)
         # print(input.size(), out.size(), step)
-        out = self.linear(out)
+        out = self.linear(_out)
+        out_labels = self.classify(_out)
 
-        return out
+        return out, out_labels

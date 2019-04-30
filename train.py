@@ -2,7 +2,7 @@ import argparse
 import random
 import math
 
-from tqdm import tqdm
+from tqdm.auto import tqdm
 import numpy as np
 from PIL import Image
 
@@ -63,7 +63,7 @@ def train(args, dataset, generator, discriminator):
     adjust_lr(g_optimizer, args.lr.get(resolution, 0.001))
     adjust_lr(d_optimizer, args.lr.get(resolution, 0.001))
 
-    pbar = tqdm(range(3_000_000))
+    pbar = tqdm(range(3_000_000), miniters=100)
 
     requires_grad(generator, False)
     requires_grad(discriminator, True)
@@ -124,13 +124,13 @@ def train(args, dataset, generator, discriminator):
         label = label.cuda()
 
         if args.loss == 'wgan-gp':
-            real_predict = discriminator(real_image, step=step, alpha=alpha)
+            real_predict, label_predict = discriminator(real_image, step=step, alpha=alpha)
             real_predict = real_predict.mean() - 0.001 * (real_predict ** 2).mean()
             (-real_predict).backward()
 
         elif args.loss == 'r1':
             real_image.requires_grad = True
-            real_predict = discriminator(real_image, step=step, alpha=alpha)
+            real_predict, label_predict = discriminator(real_image, step=step, alpha=alpha)
             real_predict = F.softplus(-real_predict).mean()
             real_predict.backward(retain_graph=True)
 
@@ -159,7 +159,7 @@ def train(args, dataset, generator, discriminator):
             gen_in2 = gen_in2.squeeze(0)
 
         fake_image = generator(gen_in1, step=step, alpha=alpha)
-        fake_predict = discriminator(fake_image, step=step, alpha=alpha)
+        fake_predict, _ = discriminator(fake_image, step=step, alpha=alpha)
 
         if args.loss == 'wgan-gp':
             fake_predict = fake_predict.mean()
@@ -168,7 +168,7 @@ def train(args, dataset, generator, discriminator):
             eps = torch.rand(b_size, 1, 1, 1).cuda()
             x_hat = eps * real_image.data + (1 - eps) * fake_image.data
             x_hat.requires_grad = True
-            hat_predict = discriminator(x_hat, step=step, alpha=alpha)
+            hat_predict, _ = discriminator(x_hat, step=step, alpha=alpha)
             grad_x_hat = grad(
                 outputs=hat_predict.sum(), inputs=x_hat, create_graph=True
             )[0]
@@ -195,7 +195,7 @@ def train(args, dataset, generator, discriminator):
 
             fake_image = generator(gen_in2, step=step, alpha=alpha)
 
-            predict = discriminator(fake_image, step=step, alpha=alpha)
+            predict, _ = discriminator(fake_image, step=step, alpha=alpha)
 
             if args.loss == 'wgan-gp':
                 loss = -predict.mean()
@@ -237,13 +237,13 @@ def train(args, dataset, generator, discriminator):
             torch.save(
                 g_running.state_dict(), f'checkpoint/{str(i + 1).zfill(6)}.model'
             )
+        if (i + 1) % 100 == 0:
+            state_msg = (
+                f'Size: {4 * 2 ** step}; G: {gen_loss_val:.3f}; D: {disc_loss_val:.3f};'
+                f' Grad: {grad_loss_val:.3f}; Alpha: {alpha:.5f}'
+            )
 
-        state_msg = (
-            f'Size: {4 * 2 ** step}; G: {gen_loss_val:.3f}; D: {disc_loss_val:.3f};'
-            f' Grad: {grad_loss_val:.3f}; Alpha: {alpha:.5f}'
-        )
-
-        pbar.set_description(state_msg)
+            pbar.set_description(state_msg)
 
 
 if __name__ == '__main__':
@@ -253,7 +253,7 @@ if __name__ == '__main__':
 
     parser = argparse.ArgumentParser(description='Progressive Growing of GANs')
 
-    parser.add_argument('path', type=str, help='path of specified dataset')
+    parser.add_argument('--path', type=str, default='data', help='path of specified dataset')
     parser.add_argument(
         '--n_gpu', type=int, default=4, help='number of gpu used for training'
     )
@@ -286,7 +286,7 @@ if __name__ == '__main__':
         help=('Specify dataset. ' 'Currently Image Folder and LSUN is supported'),
     )
 
-    args = parser.parse_args()
+    args, _ = parser.parse_known_args()
 
     generator = nn.DataParallel(StyledGenerator(code_size)).cuda()
     discriminator = nn.DataParallel(Discriminator()).cuda()

@@ -230,7 +230,7 @@ class StyledConvBlock(nn.Module):
 
 
 class Generator(nn.Module):
-    def __init__(self, code_dim):
+    def __init__(self, code_dim, n_classes=10, condition=2):
         super().__init__()
 
         self.progression = nn.ModuleList(
@@ -262,8 +262,11 @@ class Generator(nn.Module):
         )
 
         # self.blur = Blur()
+        self.condition = condition
+        self.n_classes = n_classes
+        self.label_emb = nn.Embedding(n_classes, n_classes)
 
-    def forward(self, style, noise, step=0, alpha=-1, mixing_range=(-1, -1)):
+    def forward(self, style, label, noise, step=0, alpha=-1, mixing_range=(-1, -1)):
         out = noise[0]
 
         if len(style) < 2:
@@ -288,6 +291,13 @@ class Generator(nn.Module):
                 else:
                     style_step = style[0]
 
+            if i >= self.condition:
+                style_step = style_step.clone()
+                style_step[:, :self.n_classes] = self.label_emb(label).view(-1, self.n_classes)
+            else:
+                style_step[:, :self.n_classes] = torch.zeros(style_step.shape[0],
+                                                    self.n_classes).to(style_step.device)
+
             if i > 0 and step > 0:
                 upsample = F.interpolate(
                     out, scale_factor=2, mode='bilinear', align_corners=False
@@ -311,10 +321,10 @@ class Generator(nn.Module):
 
 
 class StyledGenerator(nn.Module):
-    def __init__(self, code_dim=512, n_mlp=8):
+    def __init__(self, code_dim=512, n_mlp=8, n_classes=10, condition=2):
         super().__init__()
 
-        self.generator = Generator(code_dim)
+        self.generator = Generator(code_dim, n_classes=n_classes, condition=condition)
 
         layers = [PixelNorm()]
         for i in range(n_mlp):
@@ -326,6 +336,7 @@ class StyledGenerator(nn.Module):
     def forward(
         self,
         input,
+        label,
         noise=None,
         step=0,
         alpha=-1,
@@ -357,7 +368,7 @@ class StyledGenerator(nn.Module):
 
             styles = styles_norm
 
-        return self.generator(styles, noise, step, alpha, mixing_range=mixing_range)
+        return self.generator(styles, label, noise, step, alpha, mixing_range=mixing_range)
 
     def mean_style(self, input):
         style = self.style(input).mean(0, keepdim=True)
@@ -366,7 +377,7 @@ class StyledGenerator(nn.Module):
 
 
 class Discriminator(nn.Module):
-    def __init__(self, n_classes=10):
+    def __init__(self, n_classes=10, condition=2):
         super().__init__()
 
         self.progression = nn.ModuleList(
@@ -401,10 +412,14 @@ class Discriminator(nn.Module):
 
         self.n_layer = len(self.progression)
 
-        self.linear = EqualLinear(512, 1)
-        self.classify = EqualLinear(512, n_classes)
+        self.linear1 = EqualLinear(512+n_classes, 16)
+        self.linear2 = EqualLinear(16, 1)
+        
+        self.condition = condition
+        self.n_classes = n_classes
+        self.label_emb = nn.Embedding(n_classes, n_classes)
 
-    def forward(self, input, step=0, alpha=-1):
+    def forward(self, input, label, step=0, alpha=-1):
         for i in range(step, -1, -1):
             index = self.n_layer - i - 1
 
@@ -434,9 +449,12 @@ class Discriminator(nn.Module):
 
                     out = (1 - alpha) * skip_rgb + alpha * out
 
-        _out = out.squeeze(2).squeeze(2)
+        out = out.squeeze(2).squeeze(2)
         # print(input.size(), out.size(), step)
-        out = self.linear(_out)
-        out_labels = self.classify(_out)
+        if step >= self.condition:
+            out = torch.cat([self.label_emb(label).view(-1,self.n_classes),out], dim=-1)
+        else:
+            out = torch.cat([torch.zeros(out.shape[0],self.n_classes).to(out.device),out], dim=-1)
+        out = self.linear2(self.linear1(out))
 
-        return out, out_labels
+        return out

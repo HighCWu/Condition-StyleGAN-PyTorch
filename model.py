@@ -291,8 +291,8 @@ class Generator(nn.Module):
                 else:
                     style_step = style[0]
 
+            style_step = style_step.clone()
             if i >= self.condition:
-                style_step = style_step.clone()
                 style_step[:, :self.n_classes] = self.label_emb(label).view(-1, self.n_classes)
             else:
                 style_step[:, :self.n_classes] = torch.zeros(style_step.shape[0],

@@ -233,6 +233,9 @@ class Generator(nn.Module):
     def __init__(self, code_dim, n_classes=10, condition=2):
         super().__init__()
 
+        if type(condition) not in (list, tuple):
+            condition = [condition]
+
         self.progression = nn.ModuleList(
             [
                 StyledConvBlock(512, 512, 3, 1, initial=True),
@@ -292,7 +295,7 @@ class Generator(nn.Module):
                     style_step = style[0]
 
             style_step = style_step.clone()
-            if i >= self.condition:
+            if i in self.condition:
                 style_step[:, :self.n_classes] = self.label_emb(label).view(-1, self.n_classes)
             else:
                 style_step[:, :self.n_classes] = torch.zeros(style_step.shape[0],
@@ -380,6 +383,10 @@ class Discriminator(nn.Module):
     def __init__(self, n_classes=10, condition=2):
         super().__init__()
 
+        if type(condition) not in (list, tuple):
+            condition = [condition]
+        condition_channels = [n_classes if i in condition else 0 for i in range(9)]
+
         self.progression = nn.ModuleList(
             [
                 ConvBlock(16, 32, 3, 1),
@@ -396,15 +403,15 @@ class Discriminator(nn.Module):
 
         self.from_rgb = nn.ModuleList(
             [
-                EqualConv2d(3, 16, 1),
-                EqualConv2d(3, 32, 1),
-                EqualConv2d(3, 64, 1),
-                EqualConv2d(3, 128, 1),
-                EqualConv2d(3, 256, 1),
-                EqualConv2d(3, 512, 1),
-                EqualConv2d(3, 512, 1),
-                EqualConv2d(3, 512, 1),
-                EqualConv2d(3, 512, 1),
+                EqualConv2d(3+condition_channels[8], 16, 1),
+                EqualConv2d(3+condition_channels[7], 32, 1),
+                EqualConv2d(3+condition_channels[6], 64, 1),
+                EqualConv2d(3+condition_channels[5], 128, 1),
+                EqualConv2d(3+condition_channels[4], 256, 1),
+                EqualConv2d(3+condition_channels[3], 512, 1),
+                EqualConv2d(3+condition_channels[2], 512, 1),
+                EqualConv2d(3+condition_channels[1], 512, 1),
+                EqualConv2d(3+condition_channels[0], 512, 1),
             ]
         )
 
@@ -412,19 +419,26 @@ class Discriminator(nn.Module):
 
         self.n_layer = len(self.progression)
 
-        self.linear1 = EqualLinear(512+n_classes, 16)
-        self.linear2 = EqualLinear(16, 1)
+        self.linear = EqualLinear(512, 1)
         
         self.condition = condition
         self.n_classes = n_classes
         self.label_emb = nn.Embedding(n_classes, n_classes)
 
     def forward(self, input, label, step=0, alpha=-1):
+        label = self.label_emb(label).view(-1,self.n_classes,1,1)
+
         for i in range(step, -1, -1):
             index = self.n_layer - i - 1
 
+            downsample_input = current_input = input
+            if i in self.condition:
+                current_input = torch.cat([input, label.repeat(1,1,*input.shape[2:])], dim=1)
+            if i-1 in self.condition:
+                downsample_input = torch.cat([input, label.repeat(1,1,*input.shape[2:])], dim=1)
+
             if i == step:
-                out = self.from_rgb[index](input)
+                out = self.from_rgb[index](current_input)
 
             if i == 0:
                 out_std = torch.sqrt(out.var(0, unbiased=False) + 1e-8)
@@ -442,7 +456,7 @@ class Discriminator(nn.Module):
 
                 if i == step and 0 <= alpha < 1:
                     # skip_rgb = F.avg_pool2d(input, 2)
-                    skip_rgb = self.from_rgb[index + 1](input)
+                    skip_rgb = self.from_rgb[index + 1](downsample_input)
                     skip_rgb = F.interpolate(
                         skip_rgb, scale_factor=0.5, mode='bilinear', align_corners=False
                     )
@@ -451,10 +465,6 @@ class Discriminator(nn.Module):
 
         out = out.squeeze(2).squeeze(2)
         # print(input.size(), out.size(), step)
-        if step >= self.condition:
-            out = torch.cat([self.label_emb(label).view(-1,self.n_classes),out], dim=-1)
-        else:
-            out = torch.cat([torch.zeros(out.shape[0],self.n_classes).to(out.device),out], dim=-1)
-        out = self.linear2(self.linear1(out))
+        out = self.linear(out)
 
         return out
